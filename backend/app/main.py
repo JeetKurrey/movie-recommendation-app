@@ -78,12 +78,12 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
+        allow_origins=["*"],
         # No cookies/auth headers are used (session_id travels explicitly in
         # the request body/path), so credentials stay off — this also lets
         # allow_origins=["*"] work, which browsers reject when paired with
         # allow_credentials=True.
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
