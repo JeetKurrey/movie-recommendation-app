@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Popcorn Cue — find your next movie</title>
+<meta name="description" content="Describe what you want to watch. Popcorn Cue asks an AI, checks every title is real, and hands you a ticket.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="marquee-strip" aria-hidden="true"></div>
+
+<header class="site-header">
+  <div class="wrap site-header__inner">
+    <div class="brand">
+      <span class="brand__mark">PC</span>
+      <span class="brand__name">Popcorn Cue</span>
+    </div>
+    <nav class="header-actions">
+      <button id="openWatchlistBtn" class="btn btn--ghost" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 3h14a1 1 0 0 1 1 1v16.2a.6.6 0 0 1-.93.5L12 17l-7.07 3.7A.6.6 0 0 1 4 20.2V4a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <span>My List</span>
+        <span id="watchlistCount" class="count-badge">0</span>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero">
+    <div class="wrap">
+      <p class="hero__eyebrow">Tonight&rsquo;s showing, decided in one line</p>
+      <h1 class="hero__title">What are you<br>in the mood for?</h1>
+
+      <form id="searchForm" class="search-marquee" autocomplete="off">
+        <input
+          id="queryInput"
+          class="search-marquee__input"
+          type="text"
+          maxlength="500"
+          placeholder="something like Parasite but funnier&hellip; a rainy‑Sunday comedy&hellip; a heist film under 100 minutes"
+        >
+        <button type="submit" class="btn btn--amber search-marquee__submit">
+          Get tickets
+        </button>
+      </form>
+
+      <div class="filters" id="filters">
+        <div class="filter">
+          <label for="genreFilter">Genre</label>
+          <select id="genreFilter">
+            <option value="">Any</option>
+            <option>Action</option>
+            <option>Animation</option>
+            <option>Comedy</option>
+            <option>Crime</option>
+            <option>Documentary</option>
+            <option>Drama</option>
+            <option>Fantasy</option>
+            <option>Horror</option>
+            <option>Mystery</option>
+            <option>Romance</option>
+            <option>Sci-Fi</option>
+            <option>Thriller</option>
+          </select>
+        </div>
+        <div class="filter">
+          <label for="decadeFilter">Decade</label>
+          <select id="decadeFilter">
+            <option value="">Any</option>
+            <option>2020s</option>
+            <option>2010s</option>
+            <option>2000s</option>
+            <option>1990s</option>
+            <option>1980s</option>
+            <option>1970s</option>
+            <option>Classic (pre-1970)</option>
+          </select>
+        </div>
+        <div class="filter">
+          <label for="runtimeFilter">Max runtime <span id="runtimeValue">No limit</span></label>
+          <input id="runtimeFilter" type="range" min="70" max="240" step="10" value="240">
+        </div>
+        <div class="filter">
+          <label for="ratingFilter">Min rating <span id="ratingValue">Any</span></label>
+          <input id="ratingFilter" type="range" min="0" max="9" step="0.5" value="0">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="similar-strip">
+    <div class="wrap similar-strip__inner">
+      <span class="similar-strip__label">Loved a film already?</span>
+      <form id="similarForm" class="similar-form" autocomplete="off">
+        <input id="similarInput" type="text" maxlength="300" placeholder="Find movies like&hellip;">
+        <button type="submit" class="btn btn--teal-outline">Find similar</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="results">
+    <div class="wrap">
+      <div class="results__header">
+        <h2 id="resultsTitle">Tonight&rsquo;s picks</h2>
+        <p id="resultsSubtitle" class="results__subtitle">Tell us what you want above, or just hit &ldquo;Get tickets&rdquo; for a surprise.</p>
+      </div>
+
+      <div id="partialNotice" class="notice notice--amber" hidden>
+        Only found a few solid matches this time — showing what cleared the check.
+      </div>
+      <div id="errorNotice" class="notice notice--rose" hidden></div>
+
+      <div id="loadingState" class="loading-grid" hidden aria-live="polite" aria-label="Loading recommendations">
+        <div class="ticket-skeleton"></div>
+        <div class="ticket-skeleton"></div>
+        <div class="ticket-skeleton"></div>
+        <div class="ticket-skeleton"></div>
+      </div>
+
+      <div id="resultsGrid" class="results-grid"></div>
+
+      <div id="emptyState" class="empty-state" hidden>
+        <p>No showings matched that. Try loosening a filter, or describe the mood instead of a genre.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>Popcorn Cue — recommendations by Gemini, verified against OMDb, linked out to watch. Built for learning, not for streaming.</p>
+  </div>
+</footer>
+
+<!-- Movie detail modal -->
+<div id="movieModal" class="modal" hidden>
+  <div class="modal__backdrop" data-close-modal></div>
+  <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <button class="modal__close" type="button" data-close-modal aria-label="Close">&times;</button>
+    <div id="modalBody" class="modal__body">
+      <div class="ticket-skeleton ticket-skeleton--modal"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Watchlist drawer -->
+<div id="watchlistDrawer" class="drawer" hidden>
+  <div class="drawer__backdrop" data-close-drawer></div>
+  <aside class="drawer__panel" aria-label="My watchlist">
+    <div class="drawer__header">
+      <h2>My List</h2>
+      <button class="modal__close" type="button" data-close-drawer aria-label="Close">&times;</button>
+    </div>
+    <div id="watchlistBody" class="drawer__body">
+      <p class="drawer__empty">Nothing saved yet. Tap the stub on any recommendation to add it here.</p>
+    </div>
+  </aside>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
