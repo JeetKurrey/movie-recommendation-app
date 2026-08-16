@@ -108,13 +108,21 @@
     <div class="wrap">
       <div class="results__header">
         <h2 id="resultsTitle">Tonight&rsquo;s picks</h2>
-        <p id="resultsSubtitle" class="results__subtitle">Tell us what you want above, or just hit &ldquo;Get tickets&rdquo; for a surprise.</p>
+        <p id="resultsSubtitle" class="results__subtitle">Tell us what you want above, or tap &ldquo;Surprise me&rdquo; below.</p>
       </div>
 
       <div id="partialNotice" class="notice notice--amber" hidden>
         Only found a few solid matches this time — showing what cleared the check.
       </div>
+      <div id="unverifiedNotice" class="notice notice--amber" hidden>
+        The movie database is unreachable right now, so these picks from the AI haven&rsquo;t been checked for accuracy — treat them as suggestions, not confirmed titles.
+      </div>
       <div id="errorNotice" class="notice notice--rose" hidden></div>
+
+      <div id="idleState" class="empty-state">
+        <p>No search yet — describe a mood, or let the app pick for you.</p>
+        <button id="surpriseMeBtn" type="button" class="btn btn--amber" style="margin-top:14px;">Surprise me</button>
+      </div>
 
       <div id="loadingState" class="loading-grid" hidden aria-live="polite" aria-label="Loading recommendations">
         <div class="ticket-skeleton"></div>

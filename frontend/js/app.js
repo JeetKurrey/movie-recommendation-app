@@ -29,8 +29,11 @@
   const ratingValue = $("#ratingValue");
   const resultsGrid = $("#resultsGrid");
   const loadingState = $("#loadingState");
+  const idleState = $("#idleState");
+  const surpriseMeBtn = $("#surpriseMeBtn");
   const emptyState = $("#emptyState");
   const partialNotice = $("#partialNotice");
+  const unverifiedNotice = $("#unverifiedNotice");
   const errorNotice = $("#errorNotice");
   const resultsTitle = $("#resultsTitle");
   const resultsSubtitle = $("#resultsSubtitle");
@@ -106,25 +109,29 @@
     const card = document.createElement("article");
     card.className = "ticket";
     const isSaved = watchlistIds.has(rec.imdb_id);
+    const canOpenDetail = rec.verified !== false;
 
     card.innerHTML = `
-      <div class="ticket__poster-wrap" data-open-detail="${rec.imdb_id}">
+      <div class="ticket__poster-wrap" ${canOpenDetail ? `data-open-detail="${rec.imdb_id}"` : ""}>
         ${rec.poster_url
           ? `<img src="${rec.poster_url}" alt="${escapeHtml(rec.title)} poster" loading="lazy">`
           : posterFallbackMarkup(rec.title)}
-        ${ratingStampMarkup(rec.rating)}
+        ${rec.verified === false
+          ? `<div class="ticket__stamp ticket__stamp--none" title="Not checked against a movie database">UNVERIFIED</div>`
+          : ratingStampMarkup(rec.rating)}
+        ${canOpenDetail ? `
         <button
           class="ticket__watch-btn"
           type="button"
           aria-pressed="${isSaved}"
           aria-label="${isSaved ? "Remove from" : "Add to"} My List"
           data-toggle-watchlist='${JSON.stringify({ imdb_id: rec.imdb_id, title: rec.title, year: rec.year, rating: rec.rating, poster_url: rec.poster_url })}'
-        >${isSaved ? "&#10003;" : "&#43;"}</button>
+        >${isSaved ? "&#10003;" : "&#43;"}</button>` : ""}
       </div>
       <div class="ticket__perforation"></div>
       <div class="ticket__body">
         <div class="ticket__title-row">
-          <h3 class="ticket__title" data-open-detail="${rec.imdb_id}">${escapeHtml(rec.title)}</h3>
+          <h3 class="ticket__title" ${canOpenDetail ? `data-open-detail="${rec.imdb_id}"` : ""}>${escapeHtml(rec.title)}</h3>
           <span class="ticket__year">${rec.year ?? ""}</span>
         </div>
         <p class="ticket__reason">${escapeHtml(rec.reason)}</p>
@@ -134,6 +141,7 @@
   }
 
   function renderResults(recommendations) {
+    idleState.hidden = true;
     resultsGrid.innerHTML = "";
     if (!recommendations.length) {
       emptyState.hidden = false;
@@ -148,9 +156,11 @@
   function setLoading(isLoading) {
     loadingState.hidden = !isLoading;
     if (isLoading) {
+      idleState.hidden = true;
       resultsGrid.innerHTML = "";
       emptyState.hidden = true;
       partialNotice.hidden = true;
+      unverifiedNotice.hidden = true;
       errorNotice.hidden = true;
     }
   }
@@ -166,7 +176,9 @@
       const body = { query, filters: currentFilters() };
       const data = await apiFetch("/api/recommend", { method: "POST", body: JSON.stringify(body) });
       renderResults(data.recommendations);
-      partialNotice.hidden = !data.partial;
+      const anyUnverified = data.recommendations.some((r) => r.verified === false);
+      unverifiedNotice.hidden = !anyUnverified;
+      partialNotice.hidden = anyUnverified || !data.partial;
     } catch (err) {
       handleRequestError(err);
     } finally {
@@ -184,7 +196,9 @@
         body: JSON.stringify({ movie_title: title }),
       });
       renderResults(data.recommendations);
-      partialNotice.hidden = !data.partial;
+      const anyUnverified = data.recommendations.some((r) => r.verified === false);
+      unverifiedNotice.hidden = !anyUnverified;
+      partialNotice.hidden = anyUnverified || !data.partial;
     } catch (err) {
       handleRequestError(err);
     } finally {
@@ -193,12 +207,17 @@
   }
 
   function handleRequestError(err) {
+    idleState.hidden = true;
     resultsGrid.innerHTML = "";
     emptyState.hidden = true;
     errorNotice.hidden = false;
+    // The backend now sends an honest, specific message for config problems
+    // (missing/invalid key) and quota exhaustion, not just a blanket "high
+    // demand" — surface it directly instead of a generic fallback whenever
+    // we have one.
     errorNotice.textContent =
-      err.status === 503
-        ? (err.message || "High demand right now \u2014 please try again shortly.")
+      err.message && err.message !== `Request failed (${err.status})`
+        ? err.message
         : "Something went wrong reaching the recommendation engine. Please try again.";
   }
 
@@ -398,7 +417,14 @@
     loadWatchlist();
   });
 
+  surpriseMeBtn.addEventListener("click", () => runRecommend(""));
+
   // ---- init -------------------------------------------------------------
+  // NOTE: we deliberately do NOT call runRecommend() automatically here.
+  // Gemini's free tier has a real per-minute/per-day quota, and every page
+  // load (including plain refreshes during development) used to fire a
+  // request on its own — a major, easy-to-miss contributor to "high
+  // demand" errors that had nothing to do with actual traffic. The user
+  // now triggers the first Gemini call explicitly (search, or "Surprise me").
   loadWatchlist();
-  runRecommend("");
 })();
