@@ -218,3 +218,73 @@ async def test_movie_detail_endpoint(app_and_client):
     assert body["title"] == "Inception"
     assert body["poster_url"] == "https://example.com/inception.jpg"
     assert body["extra_ratings"] == {"Rotten Tomatoes": "87%"}
+
+
+@pytest.mark.asyncio
+async def test_recommend_reports_invalid_omdb_key_honestly_instead_of_high_demand(app_and_client):
+    """Regression test for the bug this fix addresses: an invalid/unconfigured
+    OMDb key used to make every candidate silently fail verification, so the
+    caller saw an empty list and a generic "high demand" 503 — indistinguishable
+    from real traffic-based unavailability. It should now surface as a clear
+    500 naming the actual problem, and (with ALLOW_UNVERIFIED_FALLBACK on,
+    the default) still return Gemini's raw suggestions, clearly unverified."""
+    _, client = app_and_client
+
+    gemini_payload = gemini_json_response(
+        [{"title": "Inception", "year": 2010, "reason": "Mind-bending heist."}]
+    )
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.post(url__regex=rf"{GEMINI_URL_PREFIX}.*generateContent").mock(
+            return_value=Response(200, json=gemini_payload)
+        )
+        mock.get(OMDB_URL).mock(
+            return_value=Response(200, json={"Response": "False", "Error": "Invalid API key!"})
+        )
+
+        resp = await client.post("/api/recommend", json={"query": "heist movies", "filters": {}})
+
+    # Unverified fallback is on by default, so this should succeed with a
+    # clearly-flagged, unverified result rather than a bare error.
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["partial"] is True
+    assert body["recommendations"][0]["title"] == "Inception"
+    assert body["recommendations"][0]["verified"] is False
+    assert body["recommendations"][0]["imdb_id"].startswith("unverified:")
+
+
+@pytest.mark.asyncio
+async def test_recommend_fails_honestly_with_fallback_disabled(app_and_client, monkeypatch):
+    """Same broken-OMDb-key scenario, but with the unverified fallback turned
+    off: the failure should be a clear 500 naming OMDb specifically, never
+    the generic 'high demand' 503."""
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("ALLOW_UNVERIFIED_FALLBACK", "false")
+    from app.services.recommend_service import RecommendationService
+
+    _, client = app_and_client
+    # Directly flip the already-constructed service's setting for this request,
+    # since app.state was built before the env var above was set.
+    app, _ = app_and_client
+    app.state.recommend_service._settings.allow_unverified_fallback = False
+
+    gemini_payload = gemini_json_response(
+        [{"title": "Inception", "year": 2010, "reason": "Mind-bending heist."}]
+    )
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.post(url__regex=rf"{GEMINI_URL_PREFIX}.*generateContent").mock(
+            return_value=Response(200, json=gemini_payload)
+        )
+        mock.get(OMDB_URL).mock(
+            return_value=Response(200, json={"Response": "False", "Error": "Invalid API key!"})
+        )
+
+        resp = await client.post("/api/recommend", json={"query": "heist movies", "filters": {}})
+
+    assert resp.status_code == 500
+    assert "OMDb" in resp.json()["detail"] or "OMDB" in resp.json()["detail"]
+    get_settings.cache_clear()

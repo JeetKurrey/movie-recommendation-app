@@ -20,14 +20,27 @@ from typing import Any, Dict, List, Optional
 from app.core.config import Settings
 from app.schemas.models import RecommendationOut
 from app.services.cache import TTLCache, make_cache_key
-from app.services.gemini_client import GeminiClient, GeminiError
-from app.services.omdb_client import OMDbClient, OMDbError
+from app.services.gemini_client import GeminiClient, GeminiError, GeminiNotConfigured, GeminiQuotaExceeded
+from app.services.omdb_client import OMDbClient, OMDbError, OMDbNotConfigured
 
 logger = logging.getLogger(__name__)
 
 
 class RecommendationUnavailable(RuntimeError):
-    """Raised when we truly have nothing to return (no cache, no live result)."""
+    """Raised when we truly have nothing to return (no cache, no live result).
+
+    `reason` lets the router give an honest message instead of a blanket
+    "high demand" for every failure mode:
+      - "gemini_not_configured" / "omdb_not_configured": a real setup
+        problem (missing/invalid key) — not something retrying fixes.
+      - "gemini_quota": the free-tier quota is genuinely exhausted.
+      - "unavailable": a transient/unknown failure — "try again shortly"
+        is the accurate message here.
+    """
+
+    def __init__(self, message: str, reason: str = "unavailable"):
+        super().__init__(message)
+        self.reason = reason
 
 
 class RecommendationService:
@@ -51,6 +64,13 @@ class RecommendationService:
         async def verify_one(item: Dict[str, Any]) -> Optional[RecommendationOut]:
             try:
                 match = await self._omdb.search_and_verify(item["title"], item.get("year"))
+            except OMDbNotConfigured:
+                # A missing/invalid OMDb key isn't "this one title failed" — it means
+                # verification can't work for ANY title. Let it propagate up rather
+                # than silently dropping every candidate and looking like "nothing
+                # matched" (that was a real bug: config errors and empty results
+                # were indistinguishable to the caller).
+                raise
             except OMDbError as exc:
                 logger.warning("OMDb verification failed for %r: %s", item["title"], exc)
                 return None
@@ -109,6 +129,8 @@ class RecommendationService:
             return {"recommendations": cached, "partial": False}
 
         requested = self._settings.recommend_requested_count
+        raw_items: Optional[List[Dict[str, Any]]] = None
+        reason = "unavailable"
         try:
             raw_items = await self._gemini.recommend(query, filters, requested)
             seen_ids: set = set()
@@ -138,6 +160,23 @@ class RecommendationService:
                 await self._fallback_cache.set(cache_key, verified, ttl_seconds=60 * 60 * 24 * 7)
                 return {"recommendations": verified, "partial": partial}
 
+        except GeminiNotConfigured as exc:
+            logger.error("Gemini is not configured: %s", exc)
+            reason = "gemini_not_configured"
+        except GeminiQuotaExceeded as exc:
+            logger.error("Gemini quota exceeded: %s", exc)
+            reason = "gemini_quota"
+        except OMDbNotConfigured as exc:
+            logger.error("OMDb is not configured: %s", exc)
+            reason = "omdb_not_configured"
+            if raw_items and self._settings.allow_unverified_fallback:
+                # Gemini gave us real suggestions but we have no way to verify
+                # them right now. Rather than show nothing, show them clearly
+                # marked as unverified — the user can still act on them, they
+                # just don't get the "checked against a real database" guarantee.
+                unverified = self._to_unverified(raw_items)
+                if unverified:
+                    return {"recommendations": unverified, "partial": True}
         except (GeminiError, OMDbError) as exc:
             logger.error("Live recommendation failed (%s); trying fallback cache", exc)
 
@@ -145,9 +184,7 @@ class RecommendationService:
         if fallback:
             return {"recommendations": fallback, "partial": True}
 
-        raise RecommendationUnavailable(
-            "Recommendation engine is temporarily unavailable and no cached result exists."
-        )
+        raise RecommendationUnavailable(self._unavailable_message(reason), reason=reason)
 
     async def similar(self, movie_title: str) -> Dict[str, Any]:
         cache_key = make_cache_key("similar", movie_title)
@@ -156,6 +193,8 @@ class RecommendationService:
             return {"recommendations": cached, "partial": False}
 
         count = 5
+        raw_items: Optional[List[Dict[str, Any]]] = None
+        reason = "unavailable"
         try:
             raw_items = await self._gemini.similar(movie_title, count)
             seen_ids: set = set()
@@ -170,6 +209,19 @@ class RecommendationService:
                 await self._fallback_cache.set(cache_key, verified, ttl_seconds=60 * 60 * 24 * 7)
                 return {"recommendations": verified, "partial": partial}
 
+        except GeminiNotConfigured as exc:
+            logger.error("Gemini is not configured: %s", exc)
+            reason = "gemini_not_configured"
+        except GeminiQuotaExceeded as exc:
+            logger.error("Gemini quota exceeded: %s", exc)
+            reason = "gemini_quota"
+        except OMDbNotConfigured as exc:
+            logger.error("OMDb is not configured: %s", exc)
+            reason = "omdb_not_configured"
+            if raw_items and self._settings.allow_unverified_fallback:
+                unverified = self._to_unverified(raw_items)
+                if unverified:
+                    return {"recommendations": unverified, "partial": True}
         except (GeminiError, OMDbError) as exc:
             logger.error("Live 'similar' lookup failed (%s); trying fallback cache", exc)
 
@@ -177,6 +229,51 @@ class RecommendationService:
         if fallback:
             return {"recommendations": fallback, "partial": True}
 
-        raise RecommendationUnavailable(
-            "Recommendation engine is temporarily unavailable and no cached result exists."
+        raise RecommendationUnavailable(self._unavailable_message(reason), reason=reason)
+
+    @staticmethod
+    def _to_unverified(raw_items: List[Dict[str, Any]]) -> List[RecommendationOut]:
+        """Turn Gemini's raw (unverified) suggestions into recommendations
+        with no imdb_id/poster — used only when OMDb itself is unreachable,
+        so the user gets *something* instead of a bare error. The frontend
+        should visually flag these as unverified."""
+        out = []
+        for item in raw_items:
+            title = (item.get("title") or "").strip()
+            if not title:
+                continue
+            out.append(
+                RecommendationOut(
+                    imdb_id=f"unverified:{title.lower()}",
+                    title=title,
+                    year=item.get("year"),
+                    rating=None,
+                    reason=item.get("reason") or "Suggested by the AI (not yet verified against a movie database).",
+                    poster_url=None,
+                    verified=False,
+                )
+            )
+        return out
+
+    @staticmethod
+    def _unavailable_message(reason: str) -> str:
+        return {
+            "gemini_not_configured": (
+                "The recommendation engine isn't configured yet — GEMINI_API_KEY is missing "
+                "or invalid on the server. This needs to be fixed in the backend's .env file, "
+                "not by retrying."
+            ),
+            "gemini_quota": (
+                "Gemini's free-tier quota is exhausted right now. Wait a minute (per-minute "
+                "limit) or try again tomorrow (daily limit), or check usage at "
+                "https://ai.dev/rate-limit."
+            ),
+            "omdb_not_configured": (
+                "Movie verification is unavailable — OMDB_API_KEY is missing or invalid on "
+                "the server. If you just created an OMDb key, check your email for the "
+                "activation link."
+            ),
+        }.get(
+            reason,
+            "High demand right now, or a temporary hiccup reaching Gemini/OMDb — please try again shortly.",
         )

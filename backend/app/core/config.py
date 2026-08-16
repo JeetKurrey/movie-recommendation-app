@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # --- Recommendation engine ---
     min_valid_recommendations: int = Field(default=4, validation_alias="MIN_VALID_RECOMMENDATIONS")
     recommend_requested_count: int = Field(default=8, validation_alias="RECOMMEND_REQUESTED_COUNT")
+    # If OMDb is unreachable/misconfigured but Gemini succeeded, show Gemini's
+    # suggestions unverified rather than nothing. Off by default because an
+    # unverified title could be a hallucination — the frontend must clearly
+    # flag these; only turn this on if that's an acceptable tradeoff for you.
+    allow_unverified_fallback: bool = Field(default=True, validation_alias="ALLOW_UNVERIFIED_FALLBACK")
 
 
 @lru_cache

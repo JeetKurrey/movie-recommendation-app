@@ -95,7 +95,27 @@ backend/
 └── .env.example
 ```
 
-## 6. Deploying
+## 6. Troubleshooting "high demand" / 503 errors
+
+The API used to collapse every failure into one generic "high demand"
+message, which hid real problems (a bad key looked identical to genuine
+traffic-based unavailability). It now distinguishes them, both in the
+server logs and in the HTTP response:
+
+| What you'll see | Actual cause | Fix |
+|---|---|---|
+| HTTP 500, "GEMINI_API_KEY is missing or invalid" | Gemini key not set, wrong, or not yet active | Check `.env`, regenerate at https://aistudio.google.com/apikey |
+| HTTP 500, "OMDB_API_KEY is missing or invalid" | OMDb key not set, wrong, or unactivated | Check `.env`; click the activation link in OMDb's signup email |
+| HTTP 503, "Gemini's free-tier quota is exhausted" | Genuine per-minute or per-day rate limit | Wait a minute (per-minute) or until tomorrow (daily); check https://ai.dev/rate-limit |
+| HTTP 200, results marked `"verified": false` | OMDb is down/misconfigured but Gemini still worked | These are AI suggestions that weren't checked against a real movie database — shown only because `ALLOW_UNVERIFIED_FALLBACK=true` (the default); set it to `false` to disable this and fail loudly instead |
+
+**The single biggest quota-saver:** the frontend no longer calls
+`/api/recommend` automatically on page load — every reload used to fire a
+Gemini request on its own, which adds up fast against a free-tier
+per-minute limit during development. The first Gemini call now only
+happens when the user searches or taps "Surprise me".
+
+## 7. Deploying
 
 Any ASGI-friendly free host works (Render, Railway, Fly.io). Point
 `DATABASE_URL` at Postgres for anything beyond a single instance — the

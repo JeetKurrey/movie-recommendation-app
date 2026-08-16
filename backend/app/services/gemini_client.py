@@ -33,6 +33,18 @@ class GeminiError(RuntimeError):
     """Raised when Gemini can't be reached or returns something unusable."""
 
 
+class GeminiNotConfigured(GeminiError):
+    """Raised when GEMINI_API_KEY is missing entirely — a config problem,
+    not a "try again later" problem, so callers should say so plainly."""
+
+
+class GeminiQuotaExceeded(GeminiError):
+    """Raised when Gemini's free-tier quota (per-minute or per-day) is
+    genuinely exhausted. Distinguished from other transient 429/5xx errors
+    because retrying with backoff won't help — the right move is to stop
+    burning the retry budget and tell the user honestly what happened."""
+
+
 class GeminiClient:
     def __init__(self, settings: Settings, client: Optional[httpx.AsyncClient] = None):
         self._settings = settings
@@ -49,7 +61,9 @@ class GeminiClient:
 
     async def _call(self, user_prompt: str) -> str:
         if not self.is_configured:
-            raise GeminiError("GEMINI_API_KEY is not set")
+            raise GeminiNotConfigured(
+                "GEMINI_API_KEY is not set — get a free key at https://aistudio.google.com/apikey"
+            )
 
         url = f"{self._settings.gemini_base_url}/models/{self._settings.gemini_model}:generateContent"
         params = {"key": self._settings.gemini_api_key}
@@ -75,13 +89,35 @@ class GeminiClient:
             else:
                 if resp.status_code == 200:
                     return resp.text
-                if resp.status_code in (429, 500, 502, 503, 504):
+                if resp.status_code == 429:
+                    # Gemini's free tier returns 429 both for "you're bursting too fast,
+                    # try again in a second" AND "your quota is fully exhausted for the
+                    # day" — the response body is the only way to tell them apart.
+                    # Retrying the second case with growing backoff just adds latency
+                    # for no benefit, so we fail fast on it instead of spending the
+                    # full retry budget.
+                    body_lower = resp.text.lower()
+                    if "quota" in body_lower or "billing" in body_lower:
+                        logger.warning("Gemini quota exhausted \u2014 not retrying: %s", resp.text[:300])
+                        raise GeminiQuotaExceeded(
+                            "Gemini's free-tier quota is exhausted right now (per-minute or "
+                            "daily limit). Wait a minute and try again, or check your usage at "
+                            f"https://ai.dev/rate-limit. Raw response: {resp.text[:300]}"
+                        )
+                    last_error = GeminiError(f"Gemini returned 429: {resp.text[:300]}")
+                    logger.warning("Gemini rate-limited (attempt %s/%s)", attempt, max_retries)
+                elif resp.status_code in (500, 502, 503, 504):
                     last_error = GeminiError(f"Gemini returned {resp.status_code}: {resp.text[:300]}")
                     logger.warning(
                         "Gemini transient error %s (attempt %s/%s)", resp.status_code, attempt, max_retries
                     )
+                elif resp.status_code in (401, 403):
+                    raise GeminiNotConfigured(
+                        f"Gemini rejected the API key (HTTP {resp.status_code}) — it's likely "
+                        f"invalid, expired, or not yet activated: {resp.text[:300]}"
+                    )
                 else:
-                    # Non-retryable (bad request, auth failure, etc.)
+                    # Non-retryable (bad request, etc.)
                     raise GeminiError(f"Gemini returned {resp.status_code}: {resp.text[:300]}")
 
             if attempt < max_retries:

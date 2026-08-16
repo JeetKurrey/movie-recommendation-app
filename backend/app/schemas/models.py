@@ -45,6 +45,12 @@ class RecommendationOut(BaseModel):
     rating: Optional[float] = None
     reason: str
     poster_url: Optional[str] = None
+    # False only for the "OMDb is down, Gemini still worked" fallback path —
+    # means this title was NOT checked against a real movie database and
+    # could theoretically be a hallucination. The frontend must show this
+    # distinctly (e.g. a badge) rather than render it identically to a
+    # verified result.
+    verified: bool = True
 
 
 class RecommendationsResponse(BaseModel):

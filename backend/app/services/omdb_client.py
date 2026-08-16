@@ -33,6 +33,11 @@ class OMDbError(RuntimeError):
     pass
 
 
+class OMDbNotConfigured(OMDbError):
+    """Raised when OMDB_API_KEY is missing or OMDb rejects it outright
+    (invalid/unactivated key) — a config problem, not a transient one."""
+
+
 def _clean(value: Any) -> Optional[Any]:
     """OMDb's placeholder for "no data" is the literal string 'N/A'."""
     if value is None:
@@ -93,7 +98,9 @@ class OMDbClient:
 
     async def _get(self, params: Dict[str, Any]) -> Dict[str, Any]:
         if not self.is_configured:
-            raise OMDbError("OMDB_API_KEY is not set")
+            raise OMDbNotConfigured(
+                "OMDB_API_KEY is not set — get a free key at https://www.omdbapi.com/apikey.aspx"
+            )
 
         all_params = {"apikey": self._settings.omdb_api_key, **params}
         max_retries = self._settings.external_call_max_retries
@@ -112,10 +119,19 @@ class OMDbClient:
                     # OMDb signals "not found" / bad key / rate-limit inside a 200 body.
                     if data.get("Response") == "False":
                         error = (data.get("Error") or "").lower()
+                        if "invalid api key" in error or "no api key" in error:
+                            # Not transient — the key itself is wrong/unactivated.
+                            # Most common cause: the free key from OMDb's signup email
+                            # hasn't been activated yet (check your inbox for the link).
+                            raise OMDbNotConfigured(
+                                f"OMDb rejected the API key: {data.get('Error')} — if you just "
+                                "signed up, check your email for the activation link."
+                            )
                         if "request limit" in error or "limit reached" in error:
-                            last_error = OMDbError(f"OMDb rate limit: {data.get('Error')}")
+                            last_error = OMDbError(f"OMDb daily quota exhausted: {data.get('Error')}")
                             logger.warning(
-                                "OMDb rate limit hit (attempt %s/%s): %s", attempt, max_retries, data.get("Error")
+                                "OMDb daily quota exhausted (attempt %s/%s): %s",
+                                attempt, max_retries, data.get("Error"),
                             )
                         else:
                             # Genuine "not found" — not transient, nothing to retry.
